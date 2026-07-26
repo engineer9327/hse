@@ -8,6 +8,34 @@
 </head>
 <body>
 
+<!-- ── 비밀번호 화면 ── -->
+<div id="pw-screen" style="
+  position:fixed;inset:0;background:#1e2535;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  z-index:9999;gap:20px;
+">
+  <div style="font-size:32px">🚄</div>
+  <div style="font-size:18px;font-weight:700;color:#e8ecf4;letter-spacing:-0.3px">고속선 기상검지장치 기상현황</div>
+  <div style="font-size:13px;color:#9aa3b8;margin-top:-8px">접근 비밀번호를 입력하세요</div>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:8px">
+    <input id="pw-input" type="password" placeholder="비밀번호"
+      style="
+        background:#2c3347;border:1px solid #3d4561;color:#e8ecf4;
+        border-radius:8px;padding:12px 20px;font-size:18px;
+        text-align:center;letter-spacing:6px;width:180px;outline:none;
+      "
+      onkeydown="if(event.key==='Enter')checkPw()"
+    >
+    <div id="pw-error" style="color:#d32f2f;font-size:12px;height:16px"></div>
+    <button onclick="checkPw()" style="
+      background:#1a6fc4;border:none;color:#fff;
+      padding:10px 40px;border-radius:8px;font-size:14px;
+      font-weight:600;cursor:pointer;width:180px;
+    ">확인</button>
+  </div>
+</div>
+
+
 <div class="modal-overlay" id="api-modal" style="display:none">
   <div class="modal">
     <h3>🔑 API 키 설정</h3>
@@ -443,7 +471,31 @@ function bootstrap() {
   };
   document.head.appendChild(s);
 }
-window.addEventListener('DOMContentLoaded', bootstrap);
+window.addEventListener('DOMContentLoaded', () => {
+  if (sessionStorage.getItem('auth') === 'ok') {
+    document.getElementById('pw-screen').style.display = 'none';
+    bootstrap();
+  } else {
+    document.getElementById('pw-input').focus();
+  }
+});
+
+// ── 비밀번호 확인 ──
+function checkPw() {
+  const val = document.getElementById('pw-input').value;
+  if (val === '8540') {
+    sessionStorage.setItem('auth', 'ok');
+    document.getElementById('pw-screen').style.display = 'none';
+    bootstrap();
+  } else {
+    document.getElementById('pw-error').textContent = '비밀번호가 틀렸습니다.';
+    document.getElementById('pw-input').value = '';
+    document.getElementById('pw-input').focus();
+  }
+}
+
+// bootstrap은 인증 후 수동 호출
+
 </script>
 </body>
 </html>
