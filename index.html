@@ -109,6 +109,8 @@ function initKakaoMap() {
   geocoder = new kakao.maps.services.Geocoder();
   kakaoMap.addControl(new kakao.maps.ZoomControl(),    kakao.maps.ControlPosition.RIGHT);
   kakaoMap.addControl(new kakao.maps.MapTypeControl(), kakao.maps.ControlPosition.TOPRIGHT);
+  // 초기 로드 후 지도 크기 재계산
+  setTimeout(() => { kakaoMap.relayout(); }, 300);
 
   // 기상청 관측소 마커 이미지 생성
   const makeSvg = (r, fill, stroke, sw) =>
@@ -430,6 +432,14 @@ function refreshWeather() {
 }
 
 // ── 시계 ──
+// 창 크기 변경 시 지도 재조정 (모바일↔데스크톱 전환 대응)
+window.addEventListener('resize', () => {
+  if (kakaoMap) {
+    kakaoMap.relayout();
+    console.log('지도 relayout 완료');
+  }
+});
+
 setInterval(() => {
   document.getElementById('clock').textContent =
     new Date().toLocaleString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
