@@ -8,7 +8,7 @@ const CONFIG = {
   // 기상청 API 키
   // ※ 공공데이터포털(data.go.kr) 에서 발급받은 키 → KMA_API_TYPE: "df1c1621cbe51db0d3f36a15b036cc59f32fd7241a5ba4d75a12b16b9cdd77e2"
   // ※ 기상청 API허브(apihub.kma.go.kr) 에서 발급받은 키 → KMA_API_TYPE: "sUmofD71SUyJqHw-9dlMqw"
-  KMA_API_KEY: "YOUR_KMA_API_KEY",
+  KMA_API_KEY: "df1c1621cbe51db0d3f36a15b036cc59f32fd7241a5ba4d75a12b16b9cdd77e",
 
   // 기상청 API 종류 선택
   KMA_API_TYPE: "datagokr",   // "datagokr" | "apihub"
