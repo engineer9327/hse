@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>고속선 기상검지장치 기상현황</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="modal-overlay" id="api-modal" style="display:none">
+  <div class="modal">
+    <h3>🔑 API 키 설정</h3>
+    <label for="inp-kakao">카카오 JavaScript 앱 키</label>
+    <input type="text" id="inp-kakao" placeholder="카카오 Developers JS 앱 키">
+    <label for="inp-kma">기상청 API 키 (공공데이터포털)</label>
+    <input type="text" id="inp-kma" placeholder="data.go.kr 서비스키">
+    <button onclick="saveApiKeys()">저장하고 시작</button>
+    <p class="note">※ 키는 브라우저 로컬에만 저장됩니다.</p>
+  </div>
+</div>
+
+<header>
+  <span style="font-size:20px">🚄</span>
+  <h1>고속선 기상검지장치 기상현황</h1>
+  <span class="sub">경부·호남·수도권 고속선</span>
+  <div class="header-right">
+    <span id="clock"></span>
+    <button id="refresh-btn" onclick="refreshWeather()">⟳ 갱신</button>
+    <button id="refresh-btn" onclick="showApiModal()" style="background:var(--gray3);margin-left:4px">⚙ 설정</button>
+  </div>
+</header>
+
+<div class="main">
+  <div id="map-container">
+    <div id="map"></div>
+    <div class="line-tabs">
+      <div class="line-tab all active" onclick="filterLine('all',event)">전체</div>
+      <div class="line-tab gyeongbu" onclick="filterLine('경부',event)">경부선</div>
+      <div class="line-tab honam" onclick="filterLine('호남',event)">호남선</div>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#e07b00"></div>기상검지장치 (경부선)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#2a9d5c"></div>기상검지장치 (호남선)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#d32f2f"></div>풍속 ≥14 m/s (주의)</div>
+    </div>
+  </div>
+  <div id="panel">
+    <div class="empty-panel">
+      <div class="icon">🌤️</div>
+      <p>지도에서 <strong>기상검지장치</strong> 또는<br>
+         <strong>기상청 관측소(파란 점)</strong>를 클릭하면<br>
+         현재 기상 및 예보를 표시합니다.</p>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="data.js"></script>
+<script src="utils.js"></script>
+<script src="kma.js"></script>
+
+<script>
+// ── 전역 ──
+let kakaoMap, geocoder;
+let meteoMarkers    = [];
+let allKmaMarkers   = [];   // 기상청 관측소 606개 전체
+let selectedKmaMarker = null;
+let linkedStations  = {};
+let currentFilter   = 'all';
+let siteCoords      = {};
+let currentSiteData = null;
+// MarkerImage 객체 (Kakao 로드 후 생성)
+let imgDot, imgDotSelected;
+
+// ── Kakao 지도 초기화 ──
+function initKakaoMap() {
+  kakaoMap = new kakao.maps.Map(document.getElementById('map'), {
+    center: new kakao.maps.LatLng(36.5, 127.8), level: 9
+  });
+  geocoder = new kakao.maps.services.Geocoder();
+  kakaoMap.addControl(new kakao.maps.ZoomControl(),    kakao.maps.ControlPosition.RIGHT);
+  kakaoMap.addControl(new kakao.maps.MapTypeControl(), kakao.maps.ControlPosition.TOPRIGHT);
+
+  // 기상청 관측소 마커 이미지 생성
+  const makeSvg = (r, fill, stroke, sw) =>
+    'data:image/svg+xml,' + encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${r*2}" height="${r*2}">` +
+      `<circle cx="${r}" cy="${r}" r="${r-sw/2}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/></svg>`
+    );
+
+  imgDot = new kakao.maps.MarkerImage(
+    makeSvg(6,'#1a6fc4','white',1.5), new kakao.maps.Size(12,12),
+    { offset: new kakao.maps.Point(6,6) }
+  );
+  imgDotSelected = new kakao.maps.MarkerImage(
+    makeSvg(12,'#4a9fe8','white',2.5), new kakao.maps.Size(24,24),
+    { offset: new kakao.maps.Point(12,12) }
+  );
+
+  // KMA 관측소 전체 표시
+  placeAllKmaMarkers();
+
+  // 기상검지장치 지오코딩 → 마커
+  geocodeAllSites().then(() => {
+    computeLinkedStations();
+    placeMeteoMarkers();
+  });
+}
+
+// ── KMA 전체 관측소 마커 (606개) ──
+function placeAllKmaMarkers() {
+  allKmaMarkers.forEach(m => m.setMap(null));
+  allKmaMarkers = [];
+  KMA_STATIONS.forEach(st => {
+    const m = new kakao.maps.Marker({
+      position: new kakao.maps.LatLng(st.lat, st.lon),
+      image: imgDot,
+      title: `${st.name} (지점 ${st.id})`
+    });
+    m.setMap(kakaoMap);
+    m._st = st;
+    kakao.maps.event.addListener(m, 'click', () => onKmaClick(m));
+    allKmaMarkers.push(m);
+  });
+}
+
+function onKmaClick(marker) {
+  // 이전 선택 해제
+  if (selectedKmaMarker && selectedKmaMarker !== marker) {
+    selectedKmaMarker.setImage(imgDot);
+  }
+  marker.setImage(imgDotSelected);
+  selectedKmaMarker = marker;
+  currentSiteData = null;
+  const st = marker._st;
+  showKmaPanel(st);
+}
+
+async function showKmaPanel(st) {
+  document.getElementById('panel').innerHTML = `
+    <div class="panel-header">
+      <h2>🔵 ${st.name}</h2>
+      <div class="site-id">지점 ${st.id} | ${st.addr}</div>
+    </div>
+    <div class="loading"><div class="spinner"></div>기상 데이터 조회 중...</div>`;
+  const grid = latLonToGrid(st.lat, st.lon);
+  const [cur, fcst] = await Promise.all([
+    fetchCurrentWeather(grid.nx, grid.ny),
+    fetchForecast(grid.nx, grid.ny)
+  ]);
+  renderKmaPanel(st, grid, cur, fcst);
+}
+
+function renderKmaPanel(st, grid, current, forecast) {
+  const wsd = current?.WSD ?? null;
+  const wClass = windClass(wsd);
+  let curHtml = '';
+  if (current) {
+    const dir = current.VEC ? vecToDir(parseFloat(current.VEC)) : '–';
+    curHtml = `
+      <div class="section-title">현재 기상</div>
+      <div class="current-weather">
+        <div class="wx-card ${wClass}">
+          <div class="label">풍속</div>
+          <div class="value">${fmt(wsd)}<span class="unit"> m/s</span></div>
+          <div class="sub">풍향: ${dir} (${fmt(current.VEC,'°')})</div>
+        </div>
+        <div class="wx-card">
+          <div class="label">기온</div>
+          <div class="value">${fmt(current.T1H)}<span class="unit">°C</span></div>
+          <div class="sub">습도: ${fmt(current.REH,'%')}</div>
+        </div>
+        <div class="wx-card">
+          <div class="label">강수량 (1h)</div>
+          <div class="value">${fmt(current.RN1)}<span class="unit"> mm</span></div>
+          <div class="sub">${ptyText(current.PTY)}</div>
+        </div>
+        <div class="wx-card">
+          <div class="label">하늘</div>
+          <div class="value" style="font-size:15px">${skyText(current.SKY)}</div>
+        </div>
+      </div>`;
+  } else {
+    curHtml = `<div class="section-title">현재 기상</div>
+      <div class="station-info" style="color:#f9a825;padding:8px 16px">⚠️ API 데이터 없음</div>`;
+  }
+  let fcstHtml = '';
+  if (forecast?.length) {
+    const rows = forecast.slice(0,24).map(f => {
+      const wc = windClass(parseFloat(f.WSD));
+      return `<tr>
+        <td>${formatDate(f.date)}<br><small>${formatTime(f.time)}</small></td>
+        <td>${fmt(f.TMP)}°</td>
+        <td ${wc?`class="wind-${wc}"`:''}>${fmt(f.WSD)}<br><small>${f.VEC?vecToDir(parseFloat(f.VEC)):'–'}</small></td>
+        <td>${f.POP??'–'}%</td>
+        <td>${(f.PCP&&f.PCP!=='강수없음')?f.PCP:'–'}</td>
+        <td>${(f.SNO&&f.SNO!=='적설없음')?f.SNO:'–'}</td>
+      </tr>`;
+    }).join('');
+    fcstHtml = `
+      <div class="section-title">단기예보 (24시간)</div>
+      <div class="forecast-table"><table>
+        <thead><tr><th>시각</th><th>기온</th><th>풍속<br>풍향</th><th>강수<br>확률</th><th>강수량</th><th>적설</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`;
+  }
+  document.getElementById('panel').innerHTML = `
+    <div class="panel-header">
+      <h2>🔵 ${st.name}</h2>
+      <div class="site-id">지점 ${st.id} | 격자(${grid.nx},${grid.ny})</div>
+    </div>
+    <div class="section-title">관측소 정보</div>
+    <div class="station-info"><strong>${st.name}</strong> (지점 ${st.id})<br>${st.addr}</div>
+    ${curHtml}${fcstHtml}`;
+}
+
+// ── 지오코딩 (fallback 포함) ──
+async function geocodeAllSites() {
+  // 구 캐시 삭제 후 v3 사용
+  localStorage.removeItem('meteo_coords_v4');
+  const cached = localStorage.getItem('meteo_coords_v5');
+  if (cached) {
+    siteCoords = JSON.parse(cached);
+    if (METEO_SITES.every(s => siteCoords[s.id])) { console.log('좌표 캐시(v3) 로드'); return; }
+  }
+  METEO_SITES.forEach(s => { siteCoords[s.id] = { lat: s.lat, lng: s.lng, fallback: true }; });
+  const promises = METEO_SITES.map(site => new Promise(resolve => {
+    geocoder.addressSearch(site.addr, (result, status) => {
+      if (status === kakao.maps.services.Status.OK) {
+        siteCoords[site.id] = { lat: parseFloat(result[0].y), lng: parseFloat(result[0].x) };
+      } else {
+        console.warn(`기본좌표 사용: ${site.room}`);
+      }
+      resolve();
+    });
+  }));
+  await Promise.all(promises);
+  localStorage.setItem('meteo_coords_v5', JSON.stringify(siteCoords));
+}
+
+// ── 최근접 관측소 사전 계산 ──
+function computeLinkedStations() {
+  linkedStations = {};
+  METEO_SITES.forEach(s => {
+    const c = siteCoords[s.id];
+    if (c) linkedStations[s.id] = findNearestStation(c.lat, c.lng).station;
+  });
+}
+
+// ── 기상검지장치 마커 ──
+function placeMeteoMarkers() {
+  meteoMarkers.forEach(m => m.setMap(null));
+  meteoMarkers = [];
+  METEO_SITES.forEach(site => {
+    const c = siteCoords[site.id];
+    if (!c) return;
+    if (currentFilter !== 'all' && site.line !== currentFilter) return;
+    const color = site.line === '경부' ? '#e07b00' : '#2a9d5c';
+    const el = document.createElement('div');
+    el.innerHTML = `<div style="
+      width:36px;height:36px;border-radius:50%;
+      background:${color};border:2.5px solid #fff;
+      display:flex;align-items:center;justify-content:center;
+      cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.45);
+      font-size:16px;transition:transform .15s;
+    " title="${site.room}\n${site.id}"
+       onmouseover="this.style.transform='scale(1.2)'"
+       onmouseout="this.style.transform='scale(1)'">
+      <svg width="20" height="14" viewBox="0 0 20 14" xmlns="http://www.w3.org/2000/svg">
+        <path d="M1 3.5C5 1.5 11 1.5 15 4C17 5.5 16.5 8.5 14 8.5" stroke="white" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+        <path d="M1 9C4.5 7 9.5 6.5 13 9C14.5 10 14 13 11.5 13" stroke="white" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+      </svg>
+    </div>`;
+    el.firstElementChild.addEventListener('click', () => onMeteoClick(site, c));
+    const ov = new kakao.maps.CustomOverlay({
+      position: new kakao.maps.LatLng(c.lat, c.lng),
+      content: el, yAnchor: 0.5, zIndex: 3
+    });
+    ov.setMap(kakaoMap);
+    meteoMarkers.push(ov);
+  });
+}
+
+// ── 기상검지장치 클릭 ──
+async function onMeteoClick(site, coords) {
+  currentSiteData = { site, coords };
+  // 기상청 마커 선택 해제
+  if (selectedKmaMarker) { selectedKmaMarker.setImage(imgDot); selectedKmaMarker = null; }
+  showPanelLoading(site);
+  kakaoMap.panTo(new kakao.maps.LatLng(coords.lat, coords.lng));
+  const { station, distKm } = findNearestStation(coords.lat, coords.lng);
+  const grid = latLonToGrid(station.lat, station.lon);
+  // 해당 KMA 마커 하이라이트
+  const m = allKmaMarkers.find(mk => mk._st.id === station.id);
+  if (m) { m.setImage(imgDotSelected); selectedKmaMarker = m; }
+  const [cur, fcst] = await Promise.all([
+    fetchCurrentWeather(grid.nx, grid.ny),
+    fetchForecast(grid.nx, grid.ny)
+  ]);
+  renderMeteoPanel(site, station, distKm, grid, cur, fcst);
+}
+
+function showPanelLoading(site) {
+  const c = site.line === '경부' ? '#e07b00' : '#2a9d5c';
+  document.getElementById('panel').innerHTML = `
+    <div class="panel-header">
+      <h2><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${c};margin-right:6px;vertical-align:middle"></span>${site.room}</h2>
+      <div class="site-id">${site.id} | ${site.line}선 ${site.track} | ${site.sensors.join(', ')}</div>
+    </div>
+    <div class="loading"><div class="spinner"></div>기상 데이터 조회 중...</div>`;
+}
+
+function renderMeteoPanel(site, station, distKm, grid, current, forecast) {
+  const lc = site.line === '경부' ? '#e07b00' : '#2a9d5c';
+  const wsd = current?.WSD ?? null;
+  const wClass = windClass(wsd);
+  let curHtml = '';
+  if (current) {
+    const dir = current.VEC ? vecToDir(parseFloat(current.VEC)) : '–';
+    curHtml = `
+      <div class="section-title">현재 기상 <span style="font-weight:400">(${station.name} 관측)</span></div>
+      <div class="current-weather">
+        <div class="wx-card ${wClass}">
+          <div class="label">풍속</div>
+          <div class="value">${fmt(wsd)}<span class="unit"> m/s</span></div>
+          <div class="sub">풍향: ${dir} (${fmt(current.VEC,'°')})</div>
+        </div>
+        <div class="wx-card">
+          <div class="label">기온</div>
+          <div class="value">${fmt(current.T1H)}<span class="unit">°C</span></div>
+          <div class="sub">습도: ${fmt(current.REH,'%')}</div>
+        </div>
+        <div class="wx-card">
+          <div class="label">강수량 (1h)</div>
+          <div class="value">${fmt(current.RN1)}<span class="unit"> mm</span></div>
+          <div class="sub">${ptyText(current.PTY)}</div>
+        </div>
+        <div class="wx-card">
+          <div class="label">하늘</div>
+          <div class="value" style="font-size:15px">${skyText(current.SKY)}</div>
+        </div>
+      </div>`;
+  } else {
+    curHtml = `<div class="section-title">현재 기상</div>
+      <div class="station-info" style="color:#f9a825;padding:8px 16px">⚠️ API 데이터 없음</div>`;
+  }
+  let fcstHtml = '';
+  if (forecast?.length) {
+    const rows = forecast.slice(0,24).map(f => {
+      const wc = windClass(parseFloat(f.WSD));
+      return `<tr>
+        <td>${formatDate(f.date)}<br><small>${formatTime(f.time)}</small></td>
+        <td>${fmt(f.TMP)}°</td>
+        <td ${wc?`class="wind-${wc}"`:''}>${fmt(f.WSD)}<br><small>${f.VEC?vecToDir(parseFloat(f.VEC)):'–'}</small></td>
+        <td>${f.POP??'–'}%</td>
+        <td>${(f.PCP&&f.PCP!=='강수없음')?f.PCP:'–'}</td>
+        <td>${(f.SNO&&f.SNO!=='적설없음')?f.SNO:'–'}</td>
+      </tr>`;
+    }).join('');
+    fcstHtml = `
+      <div class="section-title">단기예보 (24시간)</div>
+      <div class="forecast-table"><table>
+        <thead><tr><th>시각</th><th>기온</th><th>풍속<br>풍향</th><th>강수<br>확률</th><th>강수량</th><th>적설</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`;
+  }
+  document.getElementById('panel').innerHTML = `
+    <div class="panel-header">
+      <h2><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${lc};margin-right:6px;vertical-align:middle"></span>${site.room}</h2>
+      <div class="site-id">${site.id} | ${site.line}선 ${site.track} | 센서: ${site.sensors.join(', ')}</div>
+    </div>
+    <div class="section-title">관측소 정보</div>
+    <div class="station-info">
+      <strong>${station.name}</strong> (지점 ${station.id})<br>
+      직선거리: <strong>${distKm.toFixed(1)} km</strong> | 격자: (${grid.nx}, ${grid.ny})<br>
+      관측소 주소: ${station.addr}<br>
+      기상검지장치 주소: ${site.addr}
+    </div>
+    ${curHtml}${fcstHtml}`;
+}
+
+// ── 노선 필터 ──
+function filterLine(line, e) {
+  currentFilter = line;
+  document.querySelectorAll('.line-tab').forEach(t => t.classList.remove('active'));
+  if (e?.target) e.target.classList.add('active');
+  if (selectedKmaMarker) { selectedKmaMarker.setImage(imgDot); selectedKmaMarker = null; }
+  currentSiteData = null;
+  placeMeteoMarkers();
+  document.getElementById('panel').innerHTML = `
+    <div class="empty-panel"><div class="icon">🌤️</div>
+    <p>지도에서 <strong>기상검지장치</strong> 또는<br>
+       <strong>기상청 관측소(파란 점)</strong>를 클릭하면<br>
+       현재 기상 및 예보를 표시합니다.</p></div>`;
+}
+
+// ── 갱신 ──
+function refreshWeather() {
+  if (selectedKmaMarker) { showKmaPanel(selectedKmaMarker._st); return; }
+  if (currentSiteData) { onMeteoClick(currentSiteData.site, currentSiteData.coords); }
+}
+
+// ── 시계 ──
+setInterval(() => {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}, 1000);
+
+// ── API 키 ──
+function saveApiKeys() {
+  const k=document.getElementById('inp-kakao').value.trim();
+  const m=document.getElementById('inp-kma').value.trim();
+  if (!k||!m){alert('두 키를 모두 입력해 주세요.');return;}
+  localStorage.setItem('kakao_app_key',k);
+  localStorage.setItem('kma_api_key',m);
+  location.reload();
+}
+function showApiModal(){ document.getElementById('api-modal').style.display='flex'; }
+
+// ── 부트스트랩 ──
+function bootstrap() {
+  let kk=CONFIG.KAKAO_APP_KEY, km=CONFIG.KMA_API_KEY;
+  if(kk==='YOUR_KAKAO_APP_KEY') kk=localStorage.getItem('kakao_app_key')||'';
+  if(km==='YOUR_KMA_API_KEY'){km=localStorage.getItem('kma_api_key')||'';CONFIG.KMA_API_KEY=km;}
+  if(!kk||!km){document.getElementById('api-modal').style.display='flex';return;}
+  CONFIG.KMA_API_KEY=km;
+  const s=document.createElement('script');
+  s.src=`https://dapi.kakao.com/v2/maps/sdk.js?appkey=${kk}&libraries=services&autoload=false`;
+  s.onload=()=>{kakao.maps.load(initKakaoMap);};
+  s.onerror=()=>{
+    document.getElementById('map-container').innerHTML=`
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
+        height:100%;color:#e8ecf4;text-align:center;gap:16px;padding:32px;background:#1e2535;">
+        <div style="font-size:48px">⚠️</div>
+        <div style="font-size:16px;font-weight:700;color:#f9a825">카카오 지도 로드 실패</div>
+        <div style="font-size:13px;color:#9aa3b8;line-height:1.9;max-width:420px">
+          카카오 Developers → 앱 키 → <b style="color:#4a9fe8">JavaScript 키</b> 확인<br>
+          플랫폼 → Web → <code style="background:#2c3347;padding:2px 6px;border-radius:3px">${location.origin}</code> 등록 확인
+        </div>
+        <button onclick="showApiModal()" style="background:#1a6fc4;border:none;color:#fff;padding:10px 22px;border-radius:6px;font-size:13px;cursor:pointer">⚙ API 키 다시 입력</button>
+      </div>`;
+  };
+  document.head.appendChild(s);
+}
+window.addEventListener('DOMContentLoaded', bootstrap);
+</script>
+</body>
+</html>

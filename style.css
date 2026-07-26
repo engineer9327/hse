@@ -1,0 +1,216 @@
+/* ============================================================
+   고속선 기상검지장치 기상현황 - 스타일
+   ============================================================ */
+:root {
+  --blue:    #1a6fc4;
+  --green:   #2a9d5c;
+  --orange:  #e07b00;
+  --red:     #d32f2f;
+  --yellow:  #f9a825;
+  --gray1:   #1e2535;
+  --gray2:   #2c3347;
+  --gray3:   #3d4561;
+  --gray4:   #5a6380;
+  --text:    #e8ecf4;
+  --text-dim:#9aa3b8;
+  --border:  rgba(255,255,255,0.08);
+  --panel-w: 380px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Segoe UI', 'Apple SD Gothic Neo', sans-serif;
+  background: var(--gray1);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── 헤더 ── */
+header {
+  background: var(--gray2);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  z-index: 10;
+}
+header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
+header .sub { font-size: 12px; color: var(--text-dim); margin-left: 4px; }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+#clock { font-size: 13px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+#refresh-btn {
+  background: var(--blue);
+  border: none; color: #fff; padding: 5px 12px;
+  border-radius: 4px; font-size: 12px; cursor: pointer;
+}
+#refresh-btn:hover { opacity: 0.85; }
+
+/* ── 메인 레이아웃 ── */
+.main { display: flex; flex: 1; overflow: hidden; }
+
+/* ── 지도 ── */
+#map-container { flex: 1; position: relative; }
+#map { width: 100%; height: 100%; }
+
+/* ── 노선 탭 ── */
+.line-tabs {
+  position: absolute; top: 10px; left: 10px; z-index: 5;
+  display: flex; gap: 6px;
+}
+.line-tab {
+  padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  cursor: pointer; border: 2px solid transparent; transition: all .2s;
+}
+.line-tab.gyeongbu { background: rgba(26,111,196,0.85); border-color: #4a9fe8; }
+.line-tab.honam    { background: rgba(42,157,92,0.85);  border-color: #5ecb8a; }
+.line-tab.all      { background: rgba(61,69,97,0.85);   border-color: #7a84a0; }
+.line-tab.active   { filter: brightness(1.25); box-shadow: 0 0 0 2px #fff4; }
+
+/* ── 범례 ── */
+.legend {
+  position: absolute; bottom: 20px; left: 10px; z-index: 5;
+  background: rgba(30,37,53,0.9); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 14px; font-size: 11px;
+}
+.legend-item { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+.legend-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── 사이드 패널 ── */
+#panel {
+  width: var(--panel-w);
+  background: var(--gray2);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  flex-shrink: 0;
+  transition: transform .3s;
+}
+#panel::-webkit-scrollbar { width: 4px; }
+#panel::-webkit-scrollbar-thumb { background: var(--gray4); border-radius: 4px; }
+
+.panel-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0;
+  background: var(--gray2);
+  z-index: 2;
+}
+.panel-header h2 { font-size: 14px; font-weight: 600; }
+.panel-header .site-id { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+.section-title {
+  font-size: 11px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: .5px;
+  padding: 12px 16px 6px;
+}
+
+/* ── 현재 기상 카드 ── */
+.current-weather {
+  padding: 0 16px 12px;
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.wx-card {
+  background: var(--gray3);
+  border-radius: 8px; padding: 10px 12px;
+  border: 1px solid var(--border);
+}
+.wx-card.wide { grid-column: 1 / -1; }
+.wx-card .label { font-size: 10px; color: var(--text-dim); margin-bottom: 4px; }
+.wx-card .value { font-size: 20px; font-weight: 700; }
+.wx-card .unit  { font-size: 12px; color: var(--text-dim); }
+.wx-card .sub   { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+.wx-card.danger  { border-color: var(--red);    background: rgba(211,47,47,.2); }
+.wx-card.warning { border-color: var(--yellow); background: rgba(249,168,37,.15); }
+.wx-card.caution { border-color: var(--orange); background: rgba(224,123,0,.12); }
+
+/* ── 예보 테이블 ── */
+.forecast-table {
+  margin: 0 16px 16px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.forecast-table table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.forecast-table th {
+  background: var(--gray3); padding: 6px 8px;
+  text-align: center; font-weight: 600; color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+}
+.forecast-table td {
+  padding: 5px 8px; text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+.forecast-table tr:last-child td { border-bottom: none; }
+.forecast-table tr:nth-child(even) td { background: rgba(255,255,255,0.03); }
+.forecast-table .wind-danger  { color: var(--red);    font-weight: 700; }
+.forecast-table .wind-warning { color: var(--yellow); font-weight: 600; }
+.forecast-table .wind-caution { color: var(--orange); }
+
+/* ── 관측소 정보 ── */
+.station-info {
+  padding: 0 16px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.7;
+}
+.station-info strong { color: var(--text); }
+
+/* ── 빈 상태 ── */
+.empty-panel {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; height: 80%;
+  color: var(--text-dim); text-align: center; gap: 12px; padding: 24px;
+}
+.empty-panel .icon { font-size: 40px; opacity: 0.4; }
+.empty-panel p { font-size: 13px; line-height: 1.6; }
+
+/* ── 로딩 ── */
+.loading {
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; color: var(--text-dim); gap: 8px; font-size: 13px;
+}
+.spinner {
+  width: 18px; height: 18px; border: 2px solid var(--gray4);
+  border-top-color: var(--blue); border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── API 키 설정 모달 ── */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.7);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+.modal {
+  background: var(--gray2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 24px; width: 420px; max-width: 90vw;
+}
+.modal h3 { font-size: 15px; margin-bottom: 16px; }
+.modal label { font-size: 12px; color: var(--text-dim); display: block; margin-bottom: 4px; }
+.modal input {
+  width: 100%; background: var(--gray1); border: 1px solid var(--gray4);
+  color: var(--text); border-radius: 6px; padding: 8px 10px;
+  font-size: 13px; margin-bottom: 12px;
+}
+.modal button {
+  width: 100%; background: var(--blue); color: #fff;
+  border: none; border-radius: 6px; padding: 10px; font-size: 14px;
+  cursor: pointer; font-weight: 600;
+}
+.modal button:hover { opacity: 0.85; }
+.modal .note { font-size: 11px; color: var(--text-dim); margin-top: 10px; line-height: 1.5; }
+
+/* ── 반응형 ── */
+@media (max-width: 768px) {
+  :root { --panel-w: 100vw; }
+  .main { flex-direction: column; }
+  #map-container { height: 50vh; }
+  #panel { border-left: none; border-top: 1px solid var(--border); }
+}
