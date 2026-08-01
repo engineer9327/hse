@@ -1,104 +1,97 @@
 // ============================================================
-//  기상청 API 호출 모듈
+//  기상청 API허브 - AWS 매분자료 (nph-aws2_min)
 // ============================================================
 
-const KMA_BASE = {
-  apihub:   'https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0',
-  datagokr: 'https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0'
-};
+const AWS_MIN_URL = 'https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-aws2_min';
 
-/** CORS 프록시 경유 URL 생성 */
-function proxyUrl(url) {
-  const proxy = CONFIG.KMA_CORS_PROXY || '';
-  return proxy ? proxy + encodeURIComponent(url) : url;
+/** 조회 시각 (현재 - 5분 지연, YYYYMMDDHHMM) */
+function getAwsTm() {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - 5);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}`;
 }
 
-/** 공통 파라미터 빌드 */
-function buildParams(extra) {
-  const p = new URLSearchParams({
-    serviceKey: CONFIG.KMA_API_KEY,
-    dataType:   'JSON',
-    numOfRows:  1000,
-    pageNo:     1,
-    ...extra
+/** 결측값 판별 */
+function isMissing(v) {
+  return v === undefined || v === null ||
+         ['-9','-9.0','-9.9','-99','-999','-9999','0.0/0',''].includes(String(v).trim());
+}
+
+function clean(v) { return isMissing(v) ? null : v; }
+
+/** 응답 텍스트 파싱 → 마지막 관측행 객체 반환 */
+function parseAwsText(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  let headers = null;
+  let lastData = null;
+
+  for (const line of lines) {
+    if (line.startsWith('#START') || line.startsWith('#END') || line === '') continue;
+    if (line.startsWith('#')) {
+      const cols = line.replace(/^#+\s*/, '').trim().split(/\s+/);
+      if (cols.includes('WD') || cols.includes('WS') || cols.includes('TA')) {
+        headers = cols;
+      }
+      continue;
+    }
+    lastData = line.split(/\s+/);
+  }
+
+  if (!lastData) return null;
+
+  // 헤더 있으면 매핑, 없으면 고정 인덱스 사용
+  if (headers) {
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = clean(lastData[i]); });
+    return obj;
+  }
+
+  // 고정 컬럼 순서 (AWS2 형식)
+  return {
+    TM:     clean(lastData[0]),
+    STN:    clean(lastData[1]),
+    WD:     clean(lastData[2]),
+    WS:     clean(lastData[3]),
+    GST_WD: clean(lastData[4]),
+    GST_WS: clean(lastData[5]),
+    PA:     clean(lastData[7]),
+    TA:     clean(lastData[8]),
+    TD:     clean(lastData[9]),
+    HM:     clean(lastData[10]),
+    RN:     clean(lastData[12]),
+    RN_DAY: clean(lastData[13])
+  };
+}
+
+/** AWS 매분자료 조회 */
+async function fetchAwsMinute(stnNo) {
+  const params = new URLSearchParams({
+    tm2:     getAwsTm(),
+    stn:     stnNo,
+    disp:    0,
+    help:    1,
+    authKey: CONFIG.KMA_API_KEY
   });
-  return p.toString();
-}
+  const direct = `${AWS_MIN_URL}?${params}`;
+  const url = (CONFIG.KMA_CORS_PROXY || '') + encodeURIComponent(direct);
 
-/** API 엔드포인트 URL (프록시 포함) */
-function apiUrl(endpoint, params) {
-  const direct = `${KMA_BASE[CONFIG.KMA_API_TYPE]}/${endpoint}?${params}`;
-  return proxyUrl(direct);
-}
-
-/** 오류 메시지 파싱 */
-function parseError(json) {
-  const code = json?.response?.header?.resultCode;
-  const msg  = json?.response?.header?.resultMsg;
-  if (code && code !== '00') return `resultCode=${code} (${msg})`;
-  return null;
-}
-
-/**
- * 초단기실황 조회 (현재 기상)
- * 항목: T1H(기온), RN1(강수량), WSD(풍속), VEC(풍향), SKY(하늘), PTY(강수형태), REH(습도)
- */
-async function fetchCurrentWeather(nx, ny) {
-  const { base_date, base_time } = getNowBaseDateTime();
-  const params = buildParams({ base_date, base_time, nx, ny });
-  const url = apiUrl('getUltraSrtNcst', params);
   try {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-    const json = await res.json();
-    const err = parseError(json);
-    if (err) throw new Error(err);
-    const items = json?.response?.body?.items?.item;
-    if (!items) return null;
-    return Object.fromEntries(items.map(i => [i.category, i.obsrValue]));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    console.log('[AWS] 응답 수신, 지점:', stnNo);
+    const data = parseAwsText(text);
+    if (!data) console.warn('[AWS] 파싱 결과 없음');
+    return data;
   } catch (e) {
-    console.warn('초단기실황 오류:', e.message);
+    console.error('[AWS] 오류:', e.message);
     return null;
   }
 }
 
-/**
- * 단기예보 조회 (3일 예보)
- */
-async function fetchForecast(nx, ny) {
-  const { base_date, base_time } = getBaseDateTime();
-  const params = buildParams({ base_date, base_time, nx, ny });
-  const url = apiUrl('getVilageFcst', params);
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-    const json = await res.json();
-    const err = parseError(json);
-    if (err) throw new Error(err);
-    const items = json?.response?.body?.items?.item;
-    if (!items) return null;
-
-    const byTime = {};
-    items.forEach(item => {
-      const key = `${item.fcstDate}_${item.fcstTime}`;
-      if (!byTime[key]) byTime[key] = { date: item.fcstDate, time: item.fcstTime };
-      byTime[key][item.category] = item.fcstValue;
-    });
-    return Object.values(byTime).sort((a,b) =>
-      (a.date+a.time).localeCompare(b.date+b.time)
-    );
-  } catch (e) {
-    console.warn('단기예보 오류:', e.message);
-    return null;
-  }
-}
-
-/** 날짜 문자열 포맷 */
-function formatDate(dateStr) {
-  return `${dateStr.slice(4,6)}/${dateStr.slice(6,8)}`;
-}
-
-/** 시간 문자열 포맷 */
-function formatTime(timeStr) {
-  return `${timeStr.slice(0,2)}:${timeStr.slice(2,4)}`;
+/** 관측 시각 포맷 (TM: YYYYMMDDHHMM01 → HH:MM) */
+function formatObsTime(tm) {
+  if (!tm || tm.length < 12) return '–';
+  return `${tm.slice(8, 10)}:${tm.slice(10, 12)}`;
 }

@@ -78,7 +78,8 @@
       <div class="icon">🌤️</div>
       <p>지도에서 <strong>기상검지장치</strong> 또는<br>
          <strong>기상청 관측소(파란 점)</strong>를 클릭하면<br>
-         현재 기상 및 예보를 표시합니다.</p>
+         AWS 실측 기상 데이터를 표시합니다.<br>
+         <small style="color:var(--blue)">⟳ 1분마다 자동 갱신</small></p>
     </div>
   </div>
 </div>
@@ -109,8 +110,6 @@ function initKakaoMap() {
   geocoder = new kakao.maps.services.Geocoder();
   kakaoMap.addControl(new kakao.maps.ZoomControl(),    kakao.maps.ControlPosition.RIGHT);
   kakaoMap.addControl(new kakao.maps.MapTypeControl(), kakao.maps.ControlPosition.TOPRIGHT);
-  // 초기 로드 후 지도 크기 재계산
-  setTimeout(() => { kakaoMap.relayout(); }, 300);
 
   // 기상청 관측소 마커 이미지 생성
   const makeSvg = (r, fill, stroke, sw) =>
@@ -174,75 +173,57 @@ async function showKmaPanel(st) {
       <div class="site-id">지점 ${st.id} | ${st.addr}</div>
     </div>
     <div class="loading"><div class="spinner"></div>기상 데이터 조회 중...</div>`;
-  const grid = latLonToGrid(st.lat, st.lon);
-  const [cur, fcst] = await Promise.all([
-    fetchCurrentWeather(grid.nx, grid.ny),
-    fetchForecast(grid.nx, grid.ny)
-  ]);
-  renderKmaPanel(st, grid, cur, fcst);
+  const aws = await fetchAwsMinute(st.id);
+  renderKmaPanel(st, aws);
 }
 
-function renderKmaPanel(st, grid, current, forecast) {
-  const wsd = current?.WSD ?? null;
-  const wClass = windClass(wsd);
-  let curHtml = '';
-  if (current) {
-    const dir = current.VEC ? vecToDir(parseFloat(current.VEC)) : '–';
-    curHtml = `
-      <div class="section-title">현재 기상</div>
+function renderKmaPanel(st, aws) {
+  const wClass = windClass(aws?.WS);
+  const obsTime = aws?.TM ? formatObsTime(aws.TM) : '–';
+  let awsHtml = '';
+  if (aws) {
+    awsHtml = `
+      <div class="section-title">현재 기상 <span style="font-weight:400">(AWS 실측 · ${obsTime})</span></div>
       <div class="current-weather">
         <div class="wx-card ${wClass}">
           <div class="label">풍속</div>
-          <div class="value">${fmt(wsd)}<span class="unit"> m/s</span></div>
-          <div class="sub">풍향: ${dir} (${fmt(current.VEC,'°')})</div>
+          <div class="value">${fmt(aws.WS)}<span class="unit"> m/s</span></div>
+          <div class="sub">풍향: ${vecToDir(parseFloat(aws.WD))} (${fmt(aws.WD,'°')})</div>
         </div>
         <div class="wx-card">
           <div class="label">기온</div>
-          <div class="value">${fmt(current.T1H)}<span class="unit">°C</span></div>
-          <div class="sub">습도: ${fmt(current.REH,'%')}</div>
+          <div class="value">${fmt(aws.TA)}<span class="unit">°C</span></div>
+          <div class="sub">이슬점: ${fmt(aws.TD,'°C')}</div>
         </div>
         <div class="wx-card">
-          <div class="label">강수량 (1h)</div>
-          <div class="value">${fmt(current.RN1)}<span class="unit"> mm</span></div>
-          <div class="sub">${ptyText(current.PTY)}</div>
+          <div class="label">강수량 (1분)</div>
+          <div class="value">${fmt(aws.RN)}<span class="unit"> mm</span></div>
+          <div class="sub">일강수: ${fmt(aws.RN_DAY,' mm')}</div>
         </div>
         <div class="wx-card">
-          <div class="label">하늘</div>
-          <div class="value" style="font-size:15px">${skyText(current.SKY)}</div>
+          <div class="label">습도</div>
+          <div class="value">${fmt(aws.HM)}<span class="unit"> %</span></div>
+          <div class="sub">기압: ${fmt(aws.PA,' hPa')}</div>
         </div>
       </div>`;
   } else {
-    curHtml = `<div class="section-title">현재 기상</div>
-      <div class="station-info" style="color:#f9a825;padding:8px 16px">⚠️ API 데이터 없음</div>`;
-  }
-  let fcstHtml = '';
-  if (forecast?.length) {
-    const rows = forecast.slice(0,24).map(f => {
-      const wc = windClass(parseFloat(f.WSD));
-      return `<tr>
-        <td>${formatDate(f.date)}<br><small>${formatTime(f.time)}</small></td>
-        <td>${fmt(f.TMP)}°</td>
-        <td ${wc?`class="wind-${wc}"`:''}>${fmt(f.WSD)}<br><small>${f.VEC?vecToDir(parseFloat(f.VEC)):'–'}</small></td>
-        <td>${f.POP??'–'}%</td>
-        <td>${(f.PCP&&f.PCP!=='강수없음')?f.PCP:'–'}</td>
-        <td>${(f.SNO&&f.SNO!=='적설없음')?f.SNO:'–'}</td>
-      </tr>`;
-    }).join('');
-    fcstHtml = `
-      <div class="section-title">단기예보 (24시간)</div>
-      <div class="forecast-table"><table>
-        <thead><tr><th>시각</th><th>기온</th><th>풍속<br>풍향</th><th>강수<br>확률</th><th>강수량</th><th>적설</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>`;
+    awsHtml = `<div class="section-title">현재 기상</div>
+      <div class="station-info" style="color:#f9a825;padding:8px 16px 12px">
+        ⚠️ AWS 데이터 없음<br>
+        <span style="font-size:11px;color:var(--text-dim)">
+          해당 지점이 AWS 관측소가 아니거나 결측 중입니다.
+        </span>
+      </div>`;
   }
   document.getElementById('panel').innerHTML = `
     <div class="panel-header">
       <h2>🔵 ${st.name}</h2>
-      <div class="site-id">지점 ${st.id} | 격자(${grid.nx},${grid.ny})</div>
+      <div class="site-id">지점 ${st.id} | ${st.addr}</div>
     </div>
     <div class="section-title">관측소 정보</div>
     <div class="station-info"><strong>${st.name}</strong> (지점 ${st.id})<br>${st.addr}</div>
-    ${curHtml}${fcstHtml}`;
+    ${awsHtml}
+    <div style="padding:8px 16px;font-size:11px;color:var(--text-dim)">⟳ 1분마다 자동 갱신</div>`;
 }
 
 // ── 지오코딩 (fallback 포함) ──
@@ -315,20 +296,15 @@ function placeMeteoMarkers() {
 // ── 기상검지장치 클릭 ──
 async function onMeteoClick(site, coords) {
   currentSiteData = { site, coords };
-  // 기상청 마커 선택 해제
   if (selectedKmaMarker) { selectedKmaMarker.setImage(imgDot); selectedKmaMarker = null; }
   showPanelLoading(site);
   kakaoMap.panTo(new kakao.maps.LatLng(coords.lat, coords.lng));
   const { station, distKm } = findNearestStation(coords.lat, coords.lng);
-  const grid = latLonToGrid(station.lat, station.lon);
-  // 해당 KMA 마커 하이라이트
   const m = allKmaMarkers.find(mk => mk._st.id === station.id);
   if (m) { m.setImage(imgDotSelected); selectedKmaMarker = m; }
-  const [cur, fcst] = await Promise.all([
-    fetchCurrentWeather(grid.nx, grid.ny),
-    fetchForecast(grid.nx, grid.ny)
-  ]);
-  renderMeteoPanel(site, station, distKm, grid, cur, fcst);
+  const aws = await fetchAwsMinute(station.id);
+  renderMeteoPanel(site, station, distKm, aws);
+  startAutoRefresh();
 }
 
 function showPanelLoading(site) {
@@ -341,73 +317,60 @@ function showPanelLoading(site) {
     <div class="loading"><div class="spinner"></div>기상 데이터 조회 중...</div>`;
 }
 
-function renderMeteoPanel(site, station, distKm, grid, current, forecast) {
+function renderMeteoPanel(site, station, distKm, aws) {
   const lc = site.line === '경부' ? '#e07b00' : '#2a9d5c';
-  const wsd = current?.WSD ?? null;
-  const wClass = windClass(wsd);
-  let curHtml = '';
-  if (current) {
-    const dir = current.VEC ? vecToDir(parseFloat(current.VEC)) : '–';
-    curHtml = `
-      <div class="section-title">현재 기상 <span style="font-weight:400">(${station.name} 관측)</span></div>
+  const wClass = windClass(aws?.WS);
+  const obsTime = aws?.TM ? formatObsTime(aws.TM) : '–';
+  let awsHtml = '';
+  if (aws) {
+    awsHtml = `
+      <div class="section-title">현재 기상 <span style="font-weight:400">(${station.name} AWS · ${obsTime})</span></div>
       <div class="current-weather">
         <div class="wx-card ${wClass}">
           <div class="label">풍속</div>
-          <div class="value">${fmt(wsd)}<span class="unit"> m/s</span></div>
-          <div class="sub">풍향: ${dir} (${fmt(current.VEC,'°')})</div>
+          <div class="value">${fmt(aws.WS)}<span class="unit"> m/s</span></div>
+          <div class="sub">풍향: ${vecToDir(parseFloat(aws.WD))} (${fmt(aws.WD,'°')})</div>
         </div>
         <div class="wx-card">
           <div class="label">기온</div>
-          <div class="value">${fmt(current.T1H)}<span class="unit">°C</span></div>
-          <div class="sub">습도: ${fmt(current.REH,'%')}</div>
+          <div class="value">${fmt(aws.TA)}<span class="unit">°C</span></div>
+          <div class="sub">이슬점: ${fmt(aws.TD,'°C')}</div>
         </div>
         <div class="wx-card">
-          <div class="label">강수량 (1h)</div>
-          <div class="value">${fmt(current.RN1)}<span class="unit"> mm</span></div>
-          <div class="sub">${ptyText(current.PTY)}</div>
+          <div class="label">강수량 (1분)</div>
+          <div class="value">${fmt(aws.RN)}<span class="unit"> mm</span></div>
+          <div class="sub">일강수: ${fmt(aws.RN_DAY,' mm')}</div>
         </div>
         <div class="wx-card">
-          <div class="label">하늘</div>
-          <div class="value" style="font-size:15px">${skyText(current.SKY)}</div>
+          <div class="label">습도</div>
+          <div class="value">${fmt(aws.HM)}<span class="unit"> %</span></div>
+          <div class="sub">기압: ${fmt(aws.PA,' hPa')}</div>
         </div>
       </div>`;
   } else {
-    curHtml = `<div class="section-title">현재 기상</div>
-      <div class="station-info" style="color:#f9a825;padding:8px 16px">⚠️ API 데이터 없음</div>`;
-  }
-  let fcstHtml = '';
-  if (forecast?.length) {
-    const rows = forecast.slice(0,24).map(f => {
-      const wc = windClass(parseFloat(f.WSD));
-      return `<tr>
-        <td>${formatDate(f.date)}<br><small>${formatTime(f.time)}</small></td>
-        <td>${fmt(f.TMP)}°</td>
-        <td ${wc?`class="wind-${wc}"`:''}>${fmt(f.WSD)}<br><small>${f.VEC?vecToDir(parseFloat(f.VEC)):'–'}</small></td>
-        <td>${f.POP??'–'}%</td>
-        <td>${(f.PCP&&f.PCP!=='강수없음')?f.PCP:'–'}</td>
-        <td>${(f.SNO&&f.SNO!=='적설없음')?f.SNO:'–'}</td>
-      </tr>`;
-    }).join('');
-    fcstHtml = `
-      <div class="section-title">단기예보 (24시간)</div>
-      <div class="forecast-table"><table>
-        <thead><tr><th>시각</th><th>기온</th><th>풍속<br>풍향</th><th>강수<br>확률</th><th>강수량</th><th>적설</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>`;
+    awsHtml = `<div class="section-title">현재 기상</div>
+      <div class="station-info" style="color:#f9a825;padding:8px 16px 12px">
+        ⚠️ AWS 데이터 없음<br>
+        <span style="font-size:11px;color:var(--text-dim)">
+          해당 지점이 AWS 관측소가 아니거나 결측 중입니다.
+        </span>
+      </div>`;
   }
   document.getElementById('panel').innerHTML = `
     <div class="panel-header">
-      <h2><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${lc};margin-right:6px;vertical-align:middle"></span>${site.room}</h2>
+      <h2><span style="display:inline-block;width:10px;height:10px;border-radius:50%;
+        background:${lc};margin-right:6px;vertical-align:middle"></span>${site.room}</h2>
       <div class="site-id">${site.id} | ${site.line}선 ${site.track} | 센서: ${site.sensors.join(', ')}</div>
     </div>
     <div class="section-title">관측소 정보</div>
     <div class="station-info">
       <strong>${station.name}</strong> (지점 ${station.id})<br>
-      직선거리: <strong>${distKm.toFixed(1)} km</strong> | 격자: (${grid.nx}, ${grid.ny})<br>
+      직선거리: <strong>${distKm.toFixed(1)} km</strong><br>
       관측소 주소: ${station.addr}<br>
-      기상검지장치 주소: ${site.addr}
+      기상검지장치: ${site.addr}
     </div>
-    ${curHtml}${fcstHtml}`;
+    ${awsHtml}
+    <div style="padding:8px 16px;font-size:11px;color:var(--text-dim)">⟳ 1분마다 자동 갱신</div>`;
 }
 
 // ── 노선 필터 ──
@@ -422,24 +385,25 @@ function filterLine(line, e) {
     <div class="empty-panel"><div class="icon">🌤️</div>
     <p>지도에서 <strong>기상검지장치</strong> 또는<br>
        <strong>기상청 관측소(파란 점)</strong>를 클릭하면<br>
-       현재 기상 및 예보를 표시합니다.</p></div>`;
+       AWS 실측 기상 데이터를 표시합니다.<br>
+       <small style="color:var(--blue)">⟳ 1분마다 자동 갱신</small></p></div>`;
 }
 
-// ── 갱신 ──
+// ── 자동 갱신 ──
+let _autoTimer = null;
+function startAutoRefresh() {
+  stopAutoRefresh();
+  _autoTimer = setInterval(refreshWeather, 60000);
+}
+function stopAutoRefresh() {
+  if (_autoTimer) { clearInterval(_autoTimer); _autoTimer = null; }
+}
 function refreshWeather() {
   if (selectedKmaMarker) { showKmaPanel(selectedKmaMarker._st); return; }
   if (currentSiteData) { onMeteoClick(currentSiteData.site, currentSiteData.coords); }
 }
 
 // ── 시계 ──
-// 창 크기 변경 시 지도 재조정 (모바일↔데스크톱 전환 대응)
-window.addEventListener('resize', () => {
-  if (kakaoMap) {
-    kakaoMap.relayout();
-    console.log('지도 relayout 완료');
-  }
-});
-
 setInterval(() => {
   document.getElementById('clock').textContent =
     new Date().toLocaleString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
