@@ -78,8 +78,7 @@
       <div class="icon">🌤️</div>
       <p>지도에서 <strong>기상검지장치</strong> 또는<br>
          <strong>기상청 관측소(파란 점)</strong>를 클릭하면<br>
-         AWS 실측 기상 데이터를 표시합니다.<br>
-         <small style="color:var(--blue)">⟳ 1분마다 자동 갱신</small></p>
+         현재 기상 및 예보를 표시합니다.</p>
     </div>
   </div>
 </div>
@@ -172,9 +171,11 @@ async function showKmaPanel(st) {
       <h2>🔵 ${st.name}</h2>
       <div class="site-id">지점 ${st.id} | ${st.addr}</div>
     </div>
-    <div class="loading"><div class="spinner"></div>기상 데이터 조회 중...</div>`;
-  const aws = await fetchAwsMinute(st.id);
+    <div class="loading"><div class="spinner"></div>AWS 데이터 조회 중...</div>`;
+  const allAws = await fetchAllAws();
+  const aws = allAws ? allAws[String(st.id)] : null;
   renderKmaPanel(st, aws);
+  startAutoRefresh();
 }
 
 function renderKmaPanel(st, aws) {
@@ -209,10 +210,7 @@ function renderKmaPanel(st, aws) {
   } else {
     awsHtml = `<div class="section-title">현재 기상</div>
       <div class="station-info" style="color:#f9a825;padding:8px 16px 12px">
-        ⚠️ AWS 데이터 없음<br>
-        <span style="font-size:11px;color:var(--text-dim)">
-          해당 지점이 AWS 관측소가 아니거나 결측 중입니다.
-        </span>
+        ⚠️ AWS 데이터 없음
       </div>`;
   }
   document.getElementById('panel').innerHTML = `
@@ -220,8 +218,6 @@ function renderKmaPanel(st, aws) {
       <h2>🔵 ${st.name}</h2>
       <div class="site-id">지점 ${st.id} | ${st.addr}</div>
     </div>
-    <div class="section-title">관측소 정보</div>
-    <div class="station-info"><strong>${st.name}</strong> (지점 ${st.id})<br>${st.addr}</div>
     ${awsHtml}
     <div style="padding:8px 16px;font-size:11px;color:var(--text-dim)">⟳ 1분마다 자동 갱신</div>`;
 }
@@ -299,10 +295,12 @@ async function onMeteoClick(site, coords) {
   if (selectedKmaMarker) { selectedKmaMarker.setImage(imgDot); selectedKmaMarker = null; }
   showPanelLoading(site);
   kakaoMap.panTo(new kakao.maps.LatLng(coords.lat, coords.lng));
-  const { station, distKm } = findNearestStation(coords.lat, coords.lng);
+  // 전체 AWS 조회 후 최근접 AWS 지점 탐색
+  const allAws = await fetchAllAws();
+  const { station, distKm } = findNearestAwsStation(coords.lat, coords.lng, allAws);
+  const aws = allAws ? allAws[String(station.id)] : null;
   const m = allKmaMarkers.find(mk => mk._st.id === station.id);
   if (m) { m.setImage(imgDotSelected); selectedKmaMarker = m; }
-  const aws = await fetchAwsMinute(station.id);
   renderMeteoPanel(site, station, distKm, aws);
   startAutoRefresh();
 }
@@ -352,7 +350,7 @@ function renderMeteoPanel(site, station, distKm, aws) {
       <div class="station-info" style="color:#f9a825;padding:8px 16px 12px">
         ⚠️ AWS 데이터 없음<br>
         <span style="font-size:11px;color:var(--text-dim)">
-          해당 지점이 AWS 관측소가 아니거나 결측 중입니다.
+          브라우저 콘솔(F12)에서 [AWS] 로그를 확인하세요.
         </span>
       </div>`;
   }
@@ -385,8 +383,7 @@ function filterLine(line, e) {
     <div class="empty-panel"><div class="icon">🌤️</div>
     <p>지도에서 <strong>기상검지장치</strong> 또는<br>
        <strong>기상청 관측소(파란 점)</strong>를 클릭하면<br>
-       AWS 실측 기상 데이터를 표시합니다.<br>
-       <small style="color:var(--blue)">⟳ 1분마다 자동 갱신</small></p></div>`;
+       현재 기상 및 예보를 표시합니다.</p></div>`;
 }
 
 // ── 자동 갱신 ──
