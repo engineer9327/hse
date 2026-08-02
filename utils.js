@@ -1,3 +1,8 @@
+// ============================================================
+//  유틸리티 함수 (AWS 매분자료 전용)
+// ============================================================
+
+/** Haversine 거리(km) */
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371, D = Math.PI / 180;
   const dLat = (lat2-lat1)*D, dLon = (lon2-lon1)*D;
@@ -6,6 +11,7 @@ function haversine(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+/** 가장 가까운 KMA 관측소 */
 function findNearestStation(lat, lon) {
   let nearest = null, minDist = Infinity;
   KMA_STATIONS.forEach(s => {
@@ -15,6 +21,7 @@ function findNearestStation(lat, lon) {
   return { station: nearest, distKm: minDist };
 }
 
+/** 풍향 각도 → 16방위 */
 function vecToDir(deg) {
   if (deg === null || isNaN(deg)) return '–';
   const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE',
@@ -22,6 +29,7 @@ function vecToDir(deg) {
   return dirs[Math.round(deg / 22.5) % 16];
 }
 
+/** 풍속 → 위험도 클래스 */
 function windClass(wsd) {
   const w = parseFloat(wsd);
   if (isNaN(w) || wsd === null) return '';
@@ -31,6 +39,7 @@ function windClass(wsd) {
   return '';
 }
 
+/** 숫자 포맷 */
 function fmt(val, unit = '') {
   if (val === null || val === undefined || val === '') return '–';
   const n = parseFloat(val);
