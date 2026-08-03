@@ -54,6 +54,7 @@
   <span class="sub">경부·호남·수도권 고속선</span>
   <div class="header-right">
     <span id="clock"></span>
+    <span id="load-status" style="font-size:11px;color:var(--blue);display:none"></span>
     <button id="refresh-btn" onclick="refreshWeather()">⟳ 갱신</button>
     <button id="refresh-btn" onclick="showApiModal()" style="background:var(--gray3);margin-left:4px">⚙ 설정</button>
   </div>
@@ -148,16 +149,20 @@ function initKakaoMap() {
   // KMA 관측소 전체 표시
   placeAllKmaMarkers();
 
-  // 적설검지 AWS 지점 사전 파악 + 마커 배치
-  fetchSnowStations().then(async snowIds => {
-    const stnCoords = await fetchAwsStationCoords();
-    placeSnowMarkers(snowIds, stnCoords);
-  });
-
-  // 기상검지장치 지오코딩 → 마커
-  geocodeAllSites().then(() => {
+  // 기상검지장치 지오코딩 → 마커 → 사전 로드
+  geocodeAllSites().then(async () => {
     computeLinkedStations();
     placeMeteoMarkers();
+
+    // 백그라운드 병렬 사전 로드 (완료 후 클릭 즉시 응답)
+    showLoadingStatus('기상 데이터 로딩 중...');
+    preloadAndPrecompute(siteCoords).then(res => {
+      hideLoadingStatus();
+      if (res) {
+        placeSnowMarkers(res.snowIds, res.stnCoords);
+        console.log('[APP] ✅ 즉시 응답 준비 완료');
+      }
+    }).catch(() => hideLoadingStatus());
   });
 }
 
@@ -367,35 +372,51 @@ async function onMeteoClick(site, coords) {
   currentSiteData = { site, coords };
   if (selectedKmaMarker) { selectedKmaMarker.setImage(imgDot); selectedKmaMarker = null; }
   snowMarkers.forEach(m => m.setImage(imgSnow));
-  showPanelLoading(site);
   kakaoMap.panTo(new kakao.maps.LatLng(coords.lat, coords.lng));
 
-  const hasSnow    = site.sensors.includes('강설');
-  const onlySnow   = hasSnow && site.sensors.length === 1;
+  const onlySnow = site.sensors.includes('강설') && site.sensors.length === 1;
+  const cached   = getCachedNearest(site.id);
 
-  // ── 일반 기상 AWS (강설 전용 개소는 조회 생략) ──
-  let aws = null, station = null, distKm = 0;
+  // ── 캐시 히트: 즉시 응답 ──
+  if (cached && _awsCache) {
+    const { awsResult, snowResult } = cached;
+    const station = onlySnow ? null : awsResult?.station;
+    const distKm  = onlySnow ? 0   : (awsResult?.distKm || 0);
+    const aws     = (!onlySnow && station) ? _awsCache[String(station.id)] : null;
+    const snowAws = snowResult?.station ? _awsCache[String(snowResult.station.id)] : null;
+
+    if (station) {
+      const m = allKmaMarkers.find(mk => mk._st.id === station.id);
+      if (m) { m.setImage(imgDotSelected); selectedKmaMarker = m; }
+    }
+    if (snowResult?.station) {
+      const sm = snowMarkers.find(mk => String(mk._st.id) === String(snowResult.station.id));
+      if (sm) sm.setImage(imgSnowSelected);
+    }
+    renderMeteoPanel(site, station, distKm, aws, snowResult, snowAws);
+    startAutoRefresh();
+    return;
+  }
+
+  // ── 캐시 미스: 라이브 조회 (사전 로드 전 첫 클릭) ──
+  showPanelLoading(site);
+  const allAws = await fetchAllAws();
+  let station = null, distKm = 0, aws = null;
   if (!onlySnow) {
-    const allAws = await fetchAllAws();
-    const result  = await findNearestAws(coords.lat, coords.lng, allAws);
-    station  = result?.station;
-    distKm   = result?.distKm || 0;
-    aws      = (allAws && station) ? allAws[String(station.id)] : null;
+    const result = await findNearestAws(coords.lat, coords.lng, allAws);
+    station = result?.station; distKm = result?.distKm || 0;
+    aws = (allAws && station) ? allAws[String(station.id)] : null;
     if (station) {
       const m = allKmaMarkers.find(mk => mk._st.id === station.id);
       if (m) { m.setImage(imgDotSelected); selectedKmaMarker = m; }
     }
   }
-
-  // ── 적설검지 AWS (모든 개소에서 조회) ──
-  let snowResult = null, snowAws = null;
-  snowResult = await findNearestSnowAws(coords.lat, coords.lng);
-  if (snowResult) {
-    snowAws = await fetchCurrentSnowData(snowResult.station.id);
+  const snowResult = await findNearestSnowAws(coords.lat, coords.lng);
+  const snowAws = snowResult?.station ? (allAws?.[String(snowResult.station.id)] || null) : null;
+  if (snowResult?.station) {
     const sm = snowMarkers.find(mk => String(mk._st.id) === String(snowResult.station.id));
     if (sm) sm.setImage(imgSnowSelected);
   }
-
   renderMeteoPanel(site, station, distKm, aws, snowResult, snowAws);
   startAutoRefresh();
 }
@@ -550,10 +571,7 @@ function refreshWeather() {
 }
 
 // ── 시계 ──
-// 창 크기 변경 시 지도 재조정 (모바일↔데스크톱 전환 대응)
-window.addEventListener('resize', () => {
-  if (kakaoMap) kakaoMap.relayout();
-});
+window.addEventListener('resize', () => { if (kakaoMap) kakaoMap.relayout(); });
 
 setInterval(() => {
   document.getElementById('clock').textContent =
@@ -572,6 +590,17 @@ function saveApiKeys() {
 function showApiModal(){ document.getElementById('api-modal').style.display='flex'; }
 
 // ── 부트스트랩 ──
+
+// ── 로딩 상태 표시 ──
+function showLoadingStatus(msg) {
+  const el = document.getElementById('load-status');
+  if (el) { el.textContent = msg; el.style.display = 'inline'; }
+}
+function hideLoadingStatus() {
+  const el = document.getElementById('load-status');
+  if (el) el.style.display = 'none';
+}
+
 function bootstrap() {
   // file:// 프로토콜 경고
   if (location.protocol === 'file:') {

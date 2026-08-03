@@ -310,3 +310,103 @@ async function fetchCurrentSnowData(stnId) {
     SD_TOT: d.SD_TOT   // 총적설 (cm)
   };
 }
+
+// ============================================================
+//  성능 최적화: 사전 로드 + 즉시 응답
+// ============================================================
+
+let _nearestCache = {};  // { siteId: { awsResult, snowResult } }
+
+/** localStorage에 적설 지점 캐시 (24시간 유효) */
+const SNOW_LS_KEY = 'snow_stns_v2';
+const SNOW_LS_TTL = 86400000;
+
+/** fetchSnowStations를 localStorage 캐시로 가속 */
+async function fetchSnowStationsCached() {
+  if (_snowStationIds) return _snowStationIds;
+  try {
+    const saved = JSON.parse(localStorage.getItem(SNOW_LS_KEY) || 'null');
+    if (saved && Date.now() - saved.ts < SNOW_LS_TTL) {
+      _snowStationIds = new Set(saved.ids);
+      console.log('[SNOW] localStorage 캐시 사용:', _snowStationIds.size, '개');
+      return _snowStationIds;
+    }
+  } catch(e) {}
+
+  const result = await fetchSnowStations();
+  try {
+    localStorage.setItem(SNOW_LS_KEY, JSON.stringify({ ids:[...(result||[])], ts:Date.now() }));
+  } catch(e) {}
+  return result;
+}
+
+/** 동기 최근접 AWS 탐색 (이미 로드된 데이터 사용) */
+function findNearestAwsSync(lat, lon, allAws, stnCoords) {
+  if (stnCoords && Object.keys(stnCoords).length > 0) {
+    const activeIds = new Set(Object.keys(allAws || {}));
+    let nearest = null, minDist = Infinity;
+    Object.entries(stnCoords).forEach(([id, info]) => {
+      if (activeIds.size > 0 && !activeIds.has(id)) return;
+      const d = haversine(lat, lon, info.lat, info.lon);
+      if (d < minDist) { minDist = d; nearest = { ...info, id }; }
+    });
+    if (nearest) return { station: nearest, distKm: minDist };
+  }
+  return findNearestStation(lat, lon);
+}
+
+/** 동기 최근접 적설 AWS 탐색 (이미 로드된 데이터 사용) */
+function findNearestSnowAwsSync(lat, lon, snowIds, stnCoords) {
+  if (snowIds?.size > 0 && stnCoords) {
+    let nearest = null, minDist = Infinity;
+    snowIds.forEach(id => {
+      const c = stnCoords[id];
+      if (!c) return;
+      const d = haversine(lat, lon, c.lat, c.lon);
+      if (d < minDist) { minDist = d; nearest = { ...c, id }; }
+    });
+    if (nearest) return { station: nearest, distKm: minDist, type: 'snow' };
+  }
+  if (stnCoords && Object.keys(stnCoords).length > 0) {
+    let nearest = null, minDist = Infinity;
+    Object.entries(stnCoords).forEach(([id, c]) => {
+      const d = haversine(lat, lon, c.lat, c.lon);
+      if (d < minDist) { minDist = d; nearest = { ...c, id }; }
+    });
+    if (nearest) return { station: nearest, distKm: minDist, type: 'aws_fallback' };
+  }
+  return { ...findNearestStation(lat, lon), type: 'kma_fallback' };
+}
+
+/**
+ * 앱 시작 시 전체 데이터 병렬 사전 로드 + 23개소 최근접 사전 계산
+ * siteCoords: { siteId: {lat, lng} }
+ */
+async function preloadAndPrecompute(siteCoords) {
+  console.log('[APP] 사전 로드 시작 (병렬)...');
+  const t0 = Date.now();
+
+  const [allAws, stnCoords, snowIds] = await Promise.all([
+    fetchAllAws(),
+    fetchAwsStationCoords(),
+    fetchSnowStationsCached()
+  ]);
+
+  if (!allAws) { console.warn('[APP] AWS 데이터 없음 - 사전 계산 불가'); return false; }
+
+  // 23개 개소 최근접 사전 계산
+  Object.entries(siteCoords).forEach(([siteId, c]) => {
+    _nearestCache[siteId] = {
+      awsResult:  findNearestAwsSync(c.lat, c.lng, allAws, stnCoords),
+      snowResult: findNearestSnowAwsSync(c.lat, c.lng, snowIds, stnCoords)
+    };
+  });
+
+  console.log(`[APP] 사전 로드 완료 (${Date.now()-t0}ms) — 클릭 즉시 응답 준비 ✅`);
+  return { stnCoords, snowIds };
+}
+
+/** 사전 계산 결과 조회 */
+function getCachedNearest(siteId) {
+  return _nearestCache[siteId] || null;
+}
