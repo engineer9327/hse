@@ -219,3 +219,129 @@ function formatObsTime(tm) {
   if (!tm || tm.length < 12) return '–';
   return `${tm.slice(8,10)}:${tm.slice(10,12)}`;
 }
+
+// ============================================================
+//  적설 관측 지점 탐색 (겨울 데이터 기준)
+// ============================================================
+let _snowStationIds = null;
+const SNOW_LS_KEY   = 'snow_stns_v2';
+const SNOW_LS_TTL   = 86400000; // 24h
+
+async function fetchSnowStations() {
+  if (_snowStationIds) return _snowStationIds;
+  try {
+    const saved = JSON.parse(localStorage.getItem(SNOW_LS_KEY) || 'null');
+    if (saved && Date.now() - saved.ts < SNOW_LS_TTL) {
+      _snowStationIds = new Set(saved.ids);
+      console.log('[SNOW] localStorage 캐시:', _snowStationIds.size, '개');
+      return _snowStationIds;
+    }
+  } catch(e) {}
+
+  const winterTm = '202501150900';
+  const params = new URLSearchParams({ tm2: winterTm, stn:0, disp:0, help:1, authKey: CONFIG.KMA_API_KEY });
+  console.log('[SNOW] 겨울 데이터 조회 중...');
+  const text = await proxyFetch(`${AWS_MIN_URL}?${params}`);
+  if (!text) { console.warn('[SNOW] 조회 실패'); return new Set(); }
+
+  const winterData = parseAllAwsText(text);
+  const snowIds = new Set();
+  Object.entries(winterData).forEach(([id, d]) => {
+    if (d.SD_HR3 !== null || d.SD_DAY !== null || d.SD_TOT !== null) snowIds.add(id);
+  });
+  console.log(`[SNOW] 적설검지 개소: ${snowIds.size}개`);
+  _snowStationIds = snowIds;
+  try {
+    localStorage.setItem(SNOW_LS_KEY, JSON.stringify({ ids:[...snowIds], ts:Date.now() }));
+  } catch(e) {}
+  return snowIds;
+}
+
+async function findNearestSnowAws(lat, lon) {
+  const [snowIds, stnCoords] = await Promise.all([fetchSnowStations(), fetchAwsStationCoords()]);
+  if (snowIds?.size > 0 && stnCoords) {
+    let nearest = null, minDist = Infinity;
+    snowIds.forEach(id => {
+      const c = stnCoords[id]; if (!c) return;
+      const d = haversine(lat, lon, c.lat, c.lon);
+      if (d < minDist) { minDist = d; nearest = { ...c, id }; }
+    });
+    if (nearest) return { station: nearest, distKm: minDist, type: 'snow' };
+    console.warn('[SNOW] 좌표 매칭 실패 → fallback');
+  }
+  if (stnCoords && Object.keys(stnCoords).length > 0) {
+    let nearest = null, minDist = Infinity;
+    Object.entries(stnCoords).forEach(([id, c]) => {
+      const d = haversine(lat, lon, c.lat, c.lon);
+      if (d < minDist) { minDist = d; nearest = { ...c, id }; }
+    });
+    if (nearest) return { station: nearest, distKm: minDist, type: 'aws_fallback' };
+  }
+  return { ...findNearestStation(lat, lon), type: 'kma_fallback' };
+}
+
+async function fetchCurrentSnowData(stnId) {
+  const allAws = await fetchAllAws();
+  const d = allAws?.[String(stnId)];
+  if (!d) return null;
+  return { TM: d.TM, SD_HR3: d.SD_HR3, SD_DAY: d.SD_DAY, SD_TOT: d.SD_TOT };
+}
+
+// ============================================================
+//  성능 최적화: 사전 로드 + 즉시 응답
+// ============================================================
+let _nearestCache = {};
+
+function findNearestAwsSync(lat, lon, allAws, stnCoords) {
+  if (stnCoords && Object.keys(stnCoords).length > 0) {
+    const activeIds = new Set(Object.keys(allAws || {}));
+    let nearest = null, minDist = Infinity;
+    Object.entries(stnCoords).forEach(([id, info]) => {
+      if (activeIds.size > 0 && !activeIds.has(id)) return;
+      const d = haversine(lat, lon, info.lat, info.lon);
+      if (d < minDist) { minDist = d; nearest = { ...info, id }; }
+    });
+    if (nearest) return { station: nearest, distKm: minDist };
+  }
+  return findNearestStation(lat, lon);
+}
+
+function findNearestSnowAwsSync(lat, lon, snowIds, stnCoords) {
+  if (snowIds?.size > 0 && stnCoords) {
+    let nearest = null, minDist = Infinity;
+    snowIds.forEach(id => {
+      const c = stnCoords[id]; if (!c) return;
+      const d = haversine(lat, lon, c.lat, c.lon);
+      if (d < minDist) { minDist = d; nearest = { ...c, id }; }
+    });
+    if (nearest) return { station: nearest, distKm: minDist, type: 'snow' };
+  }
+  if (stnCoords && Object.keys(stnCoords).length > 0) {
+    let nearest = null, minDist = Infinity;
+    Object.entries(stnCoords).forEach(([id, c]) => {
+      const d = haversine(lat, lon, c.lat, c.lon);
+      if (d < minDist) { minDist = d; nearest = { ...c, id }; }
+    });
+    if (nearest) return { station: nearest, distKm: minDist, type: 'aws_fallback' };
+  }
+  return { ...findNearestStation(lat, lon), type: 'kma_fallback' };
+}
+
+async function preloadAndPrecompute(siteCoords) {
+  console.log('[APP] 사전 로드 시작 (병렬)...');
+  const t0 = Date.now();
+  const [allAws, stnCoords, snowIds] = await Promise.all([
+    fetchAllAws(), fetchAwsStationCoords(), fetchSnowStations()
+  ]);
+  if (!allAws) { console.warn('[APP] AWS 없음 - 사전 계산 불가'); return false; }
+  Object.entries(siteCoords).forEach(([siteId, c]) => {
+    _nearestCache[siteId] = {
+      awsResult:  findNearestAwsSync(c.lat, c.lng, allAws, stnCoords),
+      snowResult: findNearestSnowAwsSync(c.lat, c.lng, snowIds, stnCoords)
+    };
+  });
+  console.log(`[APP] 사전 로드 완료 (${Date.now()-t0}ms) ✅`);
+  return { stnCoords, snowIds };
+}
+
+function getCachedNearest(siteId) { return _nearestCache[siteId] || null; }
