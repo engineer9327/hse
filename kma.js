@@ -4,10 +4,14 @@
 
 const AWS_MIN_URL  = 'https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-aws2_min';
 const AWS_STN_URL  = 'https://apihub.kma.go.kr/api/typ01/url/stn_inf.php';
-const PROXIES      = [
-  'https://corsproxy.io/?url=',
-  'https://api.allorigins.win/raw?url='
-];
+const PROXIES = (() => {
+  const list = [];
+  if (typeof CONFIG !== 'undefined' && CONFIG.KMA_CORS_PROXY)
+    list.push(CONFIG.KMA_CORS_PROXY);
+  list.push('https://corsproxy.io/?url=');
+  list.push('https://api.allorigins.win/raw?url=');
+  return list;
+})();
 
 // ── 캐시 ──────────────────────────────────────────────────
 let _awsCache      = null;  // 전체 AWS 실시간 데이터 { stnId: {...} }

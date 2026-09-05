@@ -54,6 +54,7 @@
   <span class="sub">경부·호남·수도권 고속선</span>
   <div class="header-right">
     <span id="clock"></span>
+    <span id="load-status" style="font-size:11px;color:var(--blue);display:none"></span>
     <button id="refresh-btn" onclick="refreshWeather()">⟳ 갱신</button>
     <button id="refresh-btn" onclick="showApiModal()" style="background:var(--gray3);margin-left:4px">⚙ 설정</button>
   </div>
@@ -155,9 +156,14 @@ function initKakaoMap() {
   });
 
   // 기상검지장치 지오코딩 → 마커
-  geocodeAllSites().then(() => {
+  geocodeAllSites().then(async () => {
     computeLinkedStations();
     placeMeteoMarkers();
+    showLoadingStatus('기상 데이터 로딩 중...');
+    preloadAndPrecompute(siteCoords).then(res => {
+      hideLoadingStatus();
+      if (res) placeSnowMarkers(res.snowIds, res.stnCoords);
+    }).catch(() => hideLoadingStatus());
   });
 }
 
@@ -367,35 +373,48 @@ async function onMeteoClick(site, coords) {
   currentSiteData = { site, coords };
   if (selectedKmaMarker) { selectedKmaMarker.setImage(imgDot); selectedKmaMarker = null; }
   snowMarkers.forEach(m => m.setImage(imgSnow));
-  showPanelLoading(site);
   kakaoMap.panTo(new kakao.maps.LatLng(coords.lat, coords.lng));
 
-  const hasSnow    = site.sensors.includes('강설');
-  const onlySnow   = hasSnow && site.sensors.length === 1;
+  const onlySnow = site.sensors.includes('강설') && site.sensors.length === 1;
+  const cached   = getCachedNearest(site.id);
 
-  // ── 일반 기상 AWS (강설 전용 개소는 조회 생략) ──
-  let aws = null, station = null, distKm = 0;
+  if (cached && _awsCache) {
+    const { awsResult, snowResult } = cached;
+    const station = onlySnow ? null : awsResult?.station;
+    const distKm  = onlySnow ? 0 : (awsResult?.distKm || 0);
+    const aws     = (!onlySnow && station) ? _awsCache[String(station.id)] : null;
+    const snowAws = snowResult?.station ? _awsCache[String(snowResult.station.id)] : null;
+    if (station) {
+      const m = allKmaMarkers.find(mk => mk._st.id === station.id);
+      if (m) { m.setImage(imgDotSelected); selectedKmaMarker = m; }
+    }
+    if (snowResult?.station) {
+      const sm = snowMarkers.find(mk => String(mk._st.id) === String(snowResult.station.id));
+      if (sm) sm.setImage(imgSnowSelected);
+    }
+    renderMeteoPanel(site, station, distKm, aws, snowResult, snowAws);
+    startAutoRefresh();
+    return;
+  }
+
+  showPanelLoading(site);
+  const allAws = await fetchAllAws();
+  let station = null, distKm = 0, aws = null;
   if (!onlySnow) {
-    const allAws = await fetchAllAws();
-    const result  = await findNearestAws(coords.lat, coords.lng, allAws);
-    station  = result?.station;
-    distKm   = result?.distKm || 0;
-    aws      = (allAws && station) ? allAws[String(station.id)] : null;
+    const result = await findNearestAws(coords.lat, coords.lng, allAws);
+    station = result?.station; distKm = result?.distKm || 0;
+    aws = (allAws && station) ? allAws[String(station.id)] : null;
     if (station) {
       const m = allKmaMarkers.find(mk => mk._st.id === station.id);
       if (m) { m.setImage(imgDotSelected); selectedKmaMarker = m; }
     }
   }
-
-  // ── 적설검지 AWS (모든 개소에서 조회) ──
-  let snowResult = null, snowAws = null;
-  snowResult = await findNearestSnowAws(coords.lat, coords.lng);
-  if (snowResult) {
-    snowAws = await fetchCurrentSnowData(snowResult.station.id);
+  const snowResult = await findNearestSnowAws(coords.lat, coords.lng);
+  const snowAws = snowResult?.station ? (allAws?.[String(snowResult.station.id)] || null) : null;
+  if (snowResult?.station) {
     const sm = snowMarkers.find(mk => String(mk._st.id) === String(snowResult.station.id));
     if (sm) sm.setImage(imgSnowSelected);
   }
-
   renderMeteoPanel(site, station, distKm, aws, snowResult, snowAws);
   startAutoRefresh();
 }
