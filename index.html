@@ -155,11 +155,17 @@ function initKakaoMap() {
     placeSnowMarkers(snowIds, stnCoords);
   });
 
-  // 기상검지장치 지오코딩 → 마커
+  // ① AWS 데이터 즉시 로드 (지오코딩과 병렬 — 첫 클릭 속도 개선)
+  fetchAllAws();
+  fetchAwsStationCoords();
+  fetchSnowStations();
+
+  // ② 기상검지장치 지오코딩 → 마커 → 최근접 사전 계산
   geocodeAllSites().then(async () => {
     computeLinkedStations();
     placeMeteoMarkers();
-    showLoadingStatus('기상 데이터 로딩 중...');
+
+    showLoadingStatus('최근접 지점 계산 중...');
     preloadAndPrecompute(siteCoords).then(res => {
       hideLoadingStatus();
       if (res) placeSnowMarkers(res.snowIds, res.stnCoords);
@@ -227,9 +233,25 @@ async function showKmaPanel(st) {
       <div class="site-id">지점 ${st.id} | ${st.addr || ''}</div>
     </div>
     <div class="loading"><div class="spinner"></div>AWS 데이터 조회 중...</div>`;
+
   const allAws = await fetchAllAws();
-  const aws = allAws ? allAws[String(st.id)] : null;
-  renderKmaPanel(st, aws);
+  const stnCoords = await fetchAwsStationCoords();
+
+  // KMA 지점번호로 직접 조회
+  let aws = allAws ? allAws[String(st.id)] : null;
+  let awsSt = st;
+
+  // 매칭 실패 시 → 좌표 기반 최근접 AWS 탐색
+  if (!aws && stnCoords && allAws && st.lat && st.lon) {
+    const result = findNearestAwsSync(st.lat, st.lon, allAws, stnCoords);
+    if (result?.station) {
+      awsSt = result.station;
+      aws = allAws[String(awsSt.id)];
+      console.log('[KMA→AWS] 최근접 AWS:', awsSt.name, awsSt.id);
+    }
+  }
+
+  renderKmaPanel(awsSt, aws);
   startAutoRefresh();
 }
 
@@ -378,6 +400,7 @@ async function onMeteoClick(site, coords) {
   const onlySnow = site.sensors.includes('강설') && site.sensors.length === 1;
   const cached   = getCachedNearest(site.id);
 
+  // ── 캐시 히트: 즉시 응답 ──
   if (cached && _awsCache) {
     const { awsResult, snowResult } = cached;
     const station = onlySnow ? null : awsResult?.station;
@@ -397,6 +420,7 @@ async function onMeteoClick(site, coords) {
     return;
   }
 
+  // ── 캐시 미스: 라이브 조회 ──
   showPanelLoading(site);
   const allAws = await fetchAllAws();
   let station = null, distKm = 0, aws = null;
